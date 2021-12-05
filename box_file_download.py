@@ -1,131 +1,87 @@
-'''     Box Items to Ftrack v1.0
-
-Description: Gathers shared items from Box Drive and upload
-it to Ftrack
-
-Usage: Runs automatically
-'''
+# -*- coding: utf-8 -*-
+# Part of Box to Ftrack Action v1.1 - Dec/2021
 import os
+import re
 import sys
-import time
-import json
-import binascii
 
-from urllib2 import urlopen
-from urllib2 import Request 
-from urllib import urlencode
-
-import jwt
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.serialization import load_pem_private_key
-
-from boxsdk import OAuth2, Client
+from boxsdk import Client
+from boxsdk.auth.jwt_auth import JWTAuth
 
 config_file = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), 'config.json')
+    os.path.join(os.path.dirname(__file__), "config.json")
 )
+auth = JWTAuth.from_settings_file(config_file)
+client = Client(auth)
 
-with open(config_file) as info:
-    config = json.load(info)
 
-appAuth = config["boxAppSettings"]["appAuth"]
-privateKey = appAuth["privateKey"]
-passphrase = appAuth["passphrase"]
+def download_to_path(item, path):
+    f = open(os.path.join(path, item["name"]), "wb")
+    item.download_to(f)
+    f.close()
 
-# To decrypt the private key we use the cryptography library
-# (https://cryptography.io/en/latest/)
-key = load_pem_private_key(
-  data=privateKey.encode('utf8'),
-  password=passphrase.encode('utf8'),
-  backend=default_backend(),
-)
 
-# We will need the authentication_url  again later,
-# so it is handy to define here
-authentication_url = 'https://api.box.com/oauth2/token'
+def get_box_item(item, path):
+    if item["type"] == "file":
+        download_to_path(item, path)
+        return
 
-claims = {
-  'iss': config['boxAppSettings']['clientID'],
-  'sub': config['enterpriseID'],
-  'box_sub_type': 'enterprise',
-  'aud': authentication_url,
-  # This is an identifier that helps protect against
-  # replay attacks
-  'jti': binascii.hexlify(os.urandom(64)),
-  # We give the assertion a lifetime of 45 seconds 
-  # before it expires
-  'exp': int(round(time.time(), 0) + 45)
-}
-
-keyId = config['boxAppSettings']['appAuth']['publicKeyID']
-
-# Rather than constructing the JWT assertion manually, we are 
-# using the pyjwt library.
-assertion = jwt.encode(
-  claims, 
-  key, 
-  # The API support "RS256", "RS384", and "RS512" encryption
-  algorithm='RS512',
-  headers={
-    'kid': keyId
-  }
-)
-
-params = urlencode({
-  # This specifies that we are using a JWT assertion
-  # to authenticate
-  'grant_type': 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-  # Our JWT assertion
-  'assertion': assertion,
-  # The OAuth 2 client ID and secret
-  'client_id': config['boxAppSettings']['clientID'],
-  'client_secret': config['boxAppSettings']['clientSecret']
-}).encode()
-
-# Make the request, parse the JSON,
-# and extract the access token
-request = Request(authentication_url, params)
-response = urlopen(request).read()
-access_token = json.loads(response)['access_token']
-
-# Folder 0 is the root folder for this account
-# and should be empty by default
-# request = Request('https://api.box.com/2.0/folders/0', None, {
-#   'Authorization': "Bearer %s" % access_token
-# })
-# response = urlopen(request).read()
-
-oauth = OAuth2(
-    client_id=config['boxAppSettings']['clientID'],
-    client_secret=config['boxAppSettings']['clientSecret'],
-    access_token=access_token
-)
-client = Client(oauth)
-
-def boxItems(path, sharedItems):
-    for item in sharedItems.get_items():
-        if item['type'] == 'folder':
-            folderPath = os.path.join(path, item['name'])
+    for item in item.get_items():
+        if item["type"] == "folder":
+            folderPath = os.path.join(path, item["name"])
             if not os.path.exists(folderPath):
                 os.mkdir(folderPath)
-            boxItems(folderPath, item)
-        if item['type'] == 'file':
-            f = open(
-                os.path.join(path, item['name']),
-                'wb'
-            )
-            item.download_to(f)
-            f.close()
+            get_box_item(item, folderPath)
+        if item["type"] == "file":
+            download_to_path(item, path)
+
+
+def find_box_item(id, box_items):
+    # Find item using its Box ID
+    for item in box_items.get_items():
+        if item["type"] == "folder":
+            if item["id"] == id:
+                get_box_item(item, storage_path)
+                return
+            else:
+                find_box_item(id, item)
+        else:
+            if item["id"] == id:
+                get_box_item(item, storage_path)
+                return
+
+
+def make_root_path(item, path):
+    # Temporary storage location
+    if item["type"] == "folder":
+        temp_path = os.path.join(path, item["name"])
+    elif item["type"] == "file":
+        tempName = "box_" + os.path.splitext(item["name"])[0]
+        temp_path = os.path.join(path, tempName)
+
+    if not os.path.exists(temp_path):
+        os.mkdir(temp_path)
+
+    return temp_path
+
 
 def process_shared_link(link, path):
-    sharedItems = client.get_shared_item(link, None)
-    if sharedItems['type'] == 'folder':
-        folderPath = os.path.join(path, sharedItems['name'])
-        if not os.path.exists(folderPath):
-            os.mkdir(folderPath)
-        boxItems(folderPath, sharedItems)
+    # Gathering content information from URL
+    share_prefix = "https://app.box.com/s/"
+    rootLink = re.findall(share_prefix + "\w+", link)[0]
+    sub_item = re.split(rootLink, link)[-1]
 
-    print folderPath
+    global storage_path
+    if not sub_item:
+        sharedItems = client.get_shared_item(link, None)
+        storage_path = make_root_path(sharedItems, path)
+        get_box_item(sharedItems, storage_path)
+    else:
+        sharedItems = client.get_shared_item(rootLink, None)
+        storage_path = make_root_path(sharedItems, path)
+        item_type, item_id = re.split("/", link)[-2:]
+        find_box_item(item_id, sharedItems)
+
 
 if __name__ == "__main__":
     process_shared_link(sys.argv[1], sys.argv[2])
+    print(storage_path)
