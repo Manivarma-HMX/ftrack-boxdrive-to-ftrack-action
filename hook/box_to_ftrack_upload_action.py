@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Box to Ftrack Action v1.1 - Dec/2021
+# Box to Ftrack Action v1.2 - Dec/2021
 import os
 import json
 import logging
@@ -17,6 +17,10 @@ class BoxFtrackTransfer(BaseAction):
     description = "Retrive files from shared Box link."
 
     ftrack_log = logging.getLogger(identifier)
+
+    job = ""
+    asset_types = []
+    version_statuses = []
 
     def register(self):
         """Registers the action, subscribing the discover and launch topics."""
@@ -80,6 +84,8 @@ class BoxFtrackTransfer(BaseAction):
             return False
 
         entity_type, entity_id = entities[0]
+        if entity_type != "TypedContext":
+            return False
         object_type = session.query(
             'select object_type.name from {0} where id is "{1}"'.format(
                 entity_type, entity_id
@@ -266,6 +272,9 @@ class BoxFtrackTransfer(BaseAction):
                                     "parent": destination,
                                 },
                             )
+                        else:
+                            version = len(asset["versions"])
+
                         # Adding AssetVersion to empty Asset
                         asset_version = session.create(
                             "AssetVersion",

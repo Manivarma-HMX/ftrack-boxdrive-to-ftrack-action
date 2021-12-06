@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-# Part of Box to Ftrack Action v1.1 - Dec/2021
+# Part of Box to Ftrack Action v1.2 - Dec/2021
 import os
 import re
 import sys
+import shutil
 
 from boxsdk import Client
 from boxsdk.auth.jwt_auth import JWTAuth
@@ -53,7 +54,8 @@ def find_box_item(id, box_items):
 def make_root_path(item, path):
     # Temporary storage location
     if item["type"] == "folder":
-        temp_path = os.path.join(path, item["name"])
+        tempName = "box_" + item["name"]
+        temp_path = os.path.join(path, tempName)
     elif item["type"] == "file":
         tempName = "box_" + os.path.splitext(item["name"])[0]
         temp_path = os.path.join(path, tempName)
@@ -83,5 +85,13 @@ def process_shared_link(link, path):
 
 
 if __name__ == "__main__":
+    # Removing any previously generated temporary box folder
+    for item in next(os.walk(sys.argv[2]))[1]:
+        if item.startswith("box_"):
+            shutil.rmtree(
+                os.path.join(sys.argv[2], item),
+                ignore_errors=True,
+            )
+
     process_shared_link(sys.argv[1], sys.argv[2])
     print(storage_path)
